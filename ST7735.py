@@ -7,6 +7,8 @@ import machine
 import time
 from math import sqrt
 
+baseline_dict = lambda x: {',': -1, '.': -1, ':': -1, ';': -1, 'Q': -1, '_': -1, 'g': -2, 'j': -1, 'p': -2, 'q': -2, 'y': -2}.get(x, 0)
+
 # TFTRotations and TFTRGB are bits to set
 # on MADCTL to control display rotation/color layout
 # Looking at display with pins on top.
@@ -162,13 +164,13 @@ class TFT(object):
     else:
       wh = aSize
     px, py = aPos
-    width = wh[0] * aFont["Width"] + 1
+    width = wh[0] * (aFont["Width"] + 1)
     for c in aString:
       if c == '\n':
-        py += aFont["Height"] * wh[1] + 1
+        py += wh[1] * (aFont["Height"] + 3)
         px = aPos[0]
         continue
-      self.char((px, py), c, aColor, aFont, wh)
+      self.char((px, py-wh[1]*baseline_dict(c)), c, aColor, aFont, wh)
       px += width
  # We check > rather than >= to let the right (blank) edge of the
  # character print off the right of the screen.
@@ -176,7 +178,7 @@ class TFT(object):
         if nowrap:
           break
         else:
-          py += aFont["Height"] * wh[1] + 1
+          py += wh[1] * (aFont["Height"] + 3)
           px = aPos[0]
 
 # @micropython.native

@@ -1,9 +1,73 @@
 # main.py — 兼容老版 uasyncio 的 ESP32-C3 网页→ST7735 文本显示（含K1/K2启停服务器）
-import os
 import network, uasyncio as asyncio, ure, time
 from machine import SPI, Pin
+import machine
 from ST7735 import TFT, TFTColor
-from font_pixel_operator_mono8 import FONT
+from font_doto5x8 import FONT
+from show_img import show_image
+
+# ---------- BOOT 长按关机 ----------
+BOOT_PIN = 9               # ESP32-C3 常见 BOOT 按键
+LONGPRESS_MS = 3000        # 长按阈值：3 秒
+
+boot = Pin(BOOT_PIN, Pin.IN, Pin.PULL_UP)
+
+_boot_pressed_since = None
+_last_boot_irq_ms = 0
+
+def _boot_irq(p):
+    # 简单消抖
+    global _last_boot_irq_ms, _boot_pressed_since
+    now = time.ticks_ms()
+    if time.ticks_diff(now, _last_boot_irq_ms) < 120:
+        return
+    _last_boot_irq_ms = now
+    # 低电平=按下；高电平=松开
+    if p.value() == 0:
+        _boot_pressed_since = now
+    else:
+        _boot_pressed_since = None
+
+# 既要检测按下也要检测松开
+boot.irq(trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING, handler=_boot_irq)
+
+async def shutdown_to_deepsleep():
+    # 先停 HTTP
+    try:
+        await stop_http()
+    except Exception as e:
+        print("stop_http in shutdown:", e)
+
+    # 关 Wi-Fi（STA/AP 都关）
+    try:
+        sta = network.WLAN(network.STA_IF); sta.active(False)
+    except Exception:
+        pass
+    try:
+        ap  = network.WLAN(network.AP_IF);  ap.active(False)
+    except Exception:
+        pass
+
+    # 屏幕提示 & 熄屏
+    try:
+        draw_text("Shutting down...", TFT.YELLOW, 1)
+        time.sleep_ms(300)
+        tft.fill(TFT.BLACK)
+        show_image()
+        # tft.on(False)
+    except Exception:
+        pass
+
+    # 释放 SPI（可选）
+    try:
+        spi.deinit()
+    except Exception:
+        pass
+
+    print("entering deepsleep")
+    # 进入深度睡眠；需要通过 RESET 或配置外部唤醒脚才能唤醒
+    machine.deepsleep()  # 无参数=无限期
+
 
 # ---------- 屏幕 ----------
 spi = SPI(1, baudrate=20000000, polarity=0, phase=0, sck=Pin(3), mosi=Pin(4))
@@ -19,7 +83,6 @@ COLOR_MAP = {
 
 FONT_W = FONT["Width"]
 FONT_H = FONT["Height"]
-SPACING = 1
 
 def draw_text(text, color=TFT.WHITE, scale=2):
     tft.fill(TFT.BLACK)
@@ -59,6 +122,9 @@ PAGE = """\
 <html>
 <head><meta charset="utf-8"><title>ESP32-TFT</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Doto:wght@900&display=swap" rel="stylesheet">
 <style>
 body{font-family:system-ui,Segoe UI,Arial,Helvetica,sans-serif;margin:22px;}
 h1{font-size:18px;margin:0 0 12px;}
@@ -66,18 +132,18 @@ h1{font-size:18px;margin:0 0 12px;}
 textarea{width:100%;height:120px;font-size:16px}
 select,input[type=number]{font-size:16px;padding:4px}
 button{padding:8px 14px;font-size:16px;margin-right:8px}
-@font-face{
-  font-family: 'PixelOP';
-  src: url('/PixelOperatorMono8.woff2') format('woff2'),
-       url('/PixelOperatorMono8.ttf') format('truetype');
-  font-display: swap;
-}
 .preview{
   background:#000; color:#fff; margin-top:12px;
-  font-family: 'PixelOP', ui-monospace, Menlo, Consolas, monospace;
+  font-family: "Doto", sans-serif;
+  font-optical-sizing: auto;
+  font-weight: 900;
+  font-style: normal;
+  font-variation-settings:
+    "ROND" 0;
   white-space: pre;
   box-sizing: content-box;
   overflow: hidden;               /* 固定区域：超出隐藏 */
+  image-rendering: pixelated;
 }
 .info{color:#888; font-size:12px; margin-top:6px}
 </style>
@@ -103,7 +169,7 @@ button{padding:8px 14px;font-size:16px;margin-right:8px}
 </select>
 &nbsp;&nbsp;
 <label>字号：</label>
-<input id="scale" type="number" min="1" max="5" value="2" style="width:60px">
+<input id="scale" type="number" min="1" max="5" value="2" style="width:50px">
 <small>(1-5)</small>
 </div>
 
@@ -124,7 +190,6 @@ button{padding:8px 14px;font-size:16px;margin-right:8px}
 const SCREEN_W = 128, SCREEN_H = 128;
 """+f"""
 const FONT_W = {FONT_W}, FONT_H = {FONT_H};   // font5x8
-const SPACING = {SPACING};              // +1 的列/行间距
 """+"""
 const PREVIEW_ZOOM = 3;         // 网页预览放大倍数（不影响设备端）
 const text = document.getElementById('text');
@@ -153,10 +218,10 @@ fixPreviewBox();
 
 function renderPreview(){
   const s = Math.max(1, Math.min(5, parseInt(scale.value||'2')));
-  const cellW = FONT_W * s + SPACING;
-  const cellH = FONT_H * s + SPACING;
+  const cellW = s * (FONT_W + 1);
+  const cellH = s * (FONT_H + 3);
   const cols = Math.floor(SCREEN_W / cellW);
-  const rows = Math.floor(SCREEN_H / cellH);
+  const rows = Math.ceil(SCREEN_H / cellH);
 
   // 折行&截断与设备一致
   const src = (text.value || "").replace(/\\r/g, "");
@@ -181,12 +246,12 @@ function renderPreview(){
 
   // 预览样式：字号/行距/字距随 scale & ZOOM 等比变化；外壳固定
   pv.style.color = colorToCss(color.value);
-  pv.style.fontSize    = (FONT_H * s * PREVIEW_ZOOM) + "px";
-  pv.style.lineHeight  = ((FONT_H * s + SPACING) * PREVIEW_ZOOM) + "px";
-  pv.style.letterSpacing = (SPACING * PREVIEW_ZOOM) + "px";
+  pv.style.fontSize    = (1.2 * FONT_H * s * PREVIEW_ZOOM) + "px";
+  pv.style.lineHeight  = ((cellH) * PREVIEW_ZOOM) + "px";
+  pv.style.letterSpacing = (s * 0.25 * PREVIEW_ZOOM) + "px";
   pv.textContent = outLines.join("\\n");
 
-  meta.textContent = `屏幕: ${SCREEN_W}x${SCREEN_H}，单元: ${FONT_W}x${FONT_H}+间距1，列×行上限: ${cols}×${rows}，字号: ${s}x，预览放大: ${PREVIEW_ZOOM}x`;
+  meta.textContent = `屏幕: ${SCREEN_W}x${SCREEN_H}，单元: ${cellW}x${cellH}，列×行上限: ${cols}×${rows}，字号: ${s}x，预览放大: ${PREVIEW_ZOOM}x`;
 }
 
 async function post(path, body){
@@ -219,10 +284,35 @@ last_text = "Hello, ESP32!"
 last_color = "white"
 last_scale = 2
 
-def urldecode(s):
-    s = s.replace('+', ' ')
-    def repl(m): return chr(int(m.group(1), 16))
-    return ure.sub('%([0-9A-Fa-f]{2})', repl, s)
+def urldecode(s: str) -> str:
+    """application/x-www-form-urlencoded 解码：+→空格，%xx→字节,再整体按UTF-8解码。"""
+    b = bytearray()
+    i = 0
+    L = len(s)
+    while i < L:
+        ch = s[i]
+        if ch == '+':
+            b.append(0x20)    # 空格
+            i += 1
+        elif ch == '%' and i + 2 < L:
+            h = s[i+1:i+3]
+            try:
+                b.append(int(h, 16))
+                i += 3
+            except:
+                # 非法编码，按字面塞回去
+                b.extend(b'%')
+                i += 1
+        else:
+            # 直接字面字符转成单字节
+            b.append(ord(ch))
+            i += 1
+    # 统一按 UTF-8 解回字符串（忽略个别坏字节以免异常）
+    try:
+        return b.decode('utf-8')
+    except Exception:
+        return b.decode('utf-8', 'ignore')
+
 
 # --- 更稳的读头：同时兼容 \r\n 与 \n，且限制最大头长 ---
 async def read_headers(reader):
@@ -291,29 +381,6 @@ async def handle_client(reader, writer):
 
         if method == 'GET' and path == '/':
             resp = PAGE.encode('utf-8')
-
-        elif method == 'GET' and (path == '/PixelOperatorMono8.woff2' or path == '/PixelOperatorMono8.ttf'):
-            try:
-                st = os.stat(path[1:])  # 去掉前面的 /
-                fsz = st[6] if isinstance(st, tuple) else st.st_size
-                headers = ("HTTP/1.1 200 OK\r\nContent-Type: font/woff2\r\n"
-                           "Content-Length: %d\r\nConnection: close\r\n\r\n") % fsz
-                w = writer.write(headers.encode('utf-8'))
-                if hasattr(w, "__await__"):
-                    await w
-                with open(path[1:], 'rb') as f:
-                    while True:
-                        chunk = f.read(2048)
-                        if not chunk: break
-                        wc = writer.write(chunk)
-                        if hasattr(wc, "__await__"):
-                            await wc
-                return
-            except Exception as e:
-                print("serve font error:", e)
-                status = "404 Not Found"
-                resp = b"Not Found"
-                ct = "text/plain; charset=utf-8"
 
         elif method == 'POST' and path == '/update':
             form = parse_form(body_str)
@@ -456,7 +523,7 @@ async def main():
 
     print("K1=start, K2=stop. Current IP:", IP)
 
-    global _req_start, _req_stop, _server_off_since, _idle_shown
+    global _req_start, _req_stop, _server_off_since, _idle_shown, _boot_pressed_since
     while True:
         # 处理按键请求
         if _req_start:
@@ -466,13 +533,24 @@ async def main():
             _req_stop = False
             await stop_http()
 
-        # 空闲5分钟后展示图片（仅展示一次，直到下次启动/停止）
+        # 空闲1分钟后展示图片（仅展示一次，直到下次启动/停止）
         if srv is None and _server_off_since is not None and not _idle_shown:
             if time.ticks_diff(time.ticks_ms(), _server_off_since) >= IDLE_TIMEOUT_MS:
-                from show_img import show_image
                 show_image()
                 _idle_shown = True
                 break  # 退出循环
+        
+        # ---- 检测 BOOT 长按 → 关机 ----
+        if _boot_pressed_since is not None:
+            if time.ticks_diff(time.ticks_ms(), _boot_pressed_since) >= LONGPRESS_MS:
+                # 防止重复触发
+                _boot_pressed_since = None
+                try:
+                    await shutdown_to_deepsleep()
+                except Exception as e:
+                    print("shutdown error:", e)
+                # 如果没进睡眠（异常），避免继续跑
+                break
 
         await asyncio.sleep_ms(50)
 
