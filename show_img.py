@@ -85,6 +85,28 @@ def fast_show_img(fn='test128x160'):
         tft.spi.write(row) # send one row
     tft.cs(1) # display
 
+def show_image(fn='test128x160'):
+    force_normal = False
+    if fn + '.b16' in os.listdir() and not force_normal:
+        fast_show_img(fn)
+    elif fn + '.bmp' in os.listdir():
+        normal_show_img(fn)
+    else:
+        tft.text((10,10),"No image file!",TFT.WHITE,FONT,3)
+        for x in [1, 126]:
+            for y in [1, 126]:
+                tft.fillrect((x-1,y-1),(x+2,y+2),TFT.WHITE)
+                tft.pixel((x,y),TFT.BLACK)
+        # ABCDEFGHIJKLMNOPQRSTUVWXYZ
+        # 1234567890.,!?-+/():;%&`'*#=[]"_<>
+        # colors = [TFT.RED, TFT.MAROON, TFT.GREEN, TFT.FOREST, TFT.BLUE, TFT.NAVY, TFT.CYAN, TFT.YELLOW, TFT.PURPLE, TFT.WHITE, TFT.GRAY]
+        # texts = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'+'1234567890.,!?-+/():;%&`\'*#=[]"_<>'
+        # for i in range(len(texts)):
+        #     i_color = i % len(colors)
+        #     x = (i * 16) % 128
+        #     y = (i * 16) // 128 * 16
+        #     tft.text((x, y), texts[i], colors[i_color], FONT, 2)
+
 # fn = 'test128x160'
 # force_normal = True
 # if fn + '.b16' in os.listdir() and not force_normal:

@@ -164,6 +164,10 @@ class TFT(object):
     px, py = aPos
     width = wh[0] * aFont["Width"] + 1
     for c in aString:
+      if c == '\n':
+        py += aFont["Height"] * wh[1] + 1
+        px = aPos[0]
+        continue
       self.char((px, py), c, aColor, aFont, wh)
       px += width
  # We check > rather than >= to let the right (blank) edge of the

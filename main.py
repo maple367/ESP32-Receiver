@@ -1,8 +1,9 @@
 # main.py — 兼容老版 uasyncio 的 ESP32-C3 网页→ST7735 文本显示（含K1/K2启停服务器）
+import os
 import network, uasyncio as asyncio, ure, time
 from machine import SPI, Pin
 from ST7735 import TFT, TFTColor
-from font5x8 import FONT
+from font_pixel_operator_mono8 import FONT
 
 # ---------- 屏幕 ----------
 spi = SPI(1, baudrate=20000000, polarity=0, phase=0, sck=Pin(3), mosi=Pin(4))
@@ -22,20 +23,7 @@ SPACING = 1
 
 def draw_text(text, color=TFT.WHITE, scale=2):
     tft.fill(TFT.BLACK)
-    max_w, max_h = 128, 128
-    ch_w = FONT_W * scale + SPACING
-    ch_h = FONT_H * scale + SPACING
-    x, y = 0, 0
-    for ch in (text or "").replace('\r', ''):
-        if ch == '\n':
-            x = 0; y += ch_h
-            if y + ch_h > max_h: break
-            continue
-        if x + ch_w > max_w:
-            x = 0; y += ch_h
-            if y + ch_h > max_h: break
-        tft.text((x, y), ch, color, FONT, scale)
-        x += ch_w
+    tft.text((0,0), text, color, FONT, scale)
 
 # ---------- Wi-Fi（AP） ----------
 def start_ap():
@@ -78,9 +66,15 @@ h1{font-size:18px;margin:0 0 12px;}
 textarea{width:100%;height:120px;font-size:16px}
 select,input[type=number]{font-size:16px;padding:4px}
 button{padding:8px 14px;font-size:16px;margin-right:8px}
+@font-face{
+  font-family: 'PixelOP';
+  src: url('/PixelOperatorMono8.woff2') format('woff2'),
+       url('/PixelOperatorMono8.ttf') format('truetype');
+  font-display: swap;
+}
 .preview{
   background:#000; color:#fff; margin-top:12px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: 'PixelOP', ui-monospace, Menlo, Consolas, monospace;
   white-space: pre;
   box-sizing: content-box;
   overflow: hidden;               /* 固定区域：超出隐藏 */
@@ -128,8 +122,10 @@ button{padding:8px 14px;font-size:16px;margin-right:8px}
 <script>
 /* 与设备保持一致的渲染逻辑（预览固定区域 + 字号随 scale 变化） */
 const SCREEN_W = 128, SCREEN_H = 128;
-const FONT_W = 5, FONT_H = 8;   // font5x8
-const SPACING = 1;              // +1 的列/行间距
+"""+f"""
+const FONT_W = {FONT_W}, FONT_H = {FONT_H};   // font5x8
+const SPACING = {SPACING};              // +1 的列/行间距
+"""+"""
 const PREVIEW_ZOOM = 3;         // 网页预览放大倍数（不影响设备端）
 const text = document.getElementById('text');
 const color= document.getElementById('color');
@@ -296,6 +292,29 @@ async def handle_client(reader, writer):
         if method == 'GET' and path == '/':
             resp = PAGE.encode('utf-8')
 
+        elif method == 'GET' and (path == '/PixelOperatorMono8.woff2' or path == '/PixelOperatorMono8.ttf'):
+            try:
+                st = os.stat(path[1:])  # 去掉前面的 /
+                fsz = st[6] if isinstance(st, tuple) else st.st_size
+                headers = ("HTTP/1.1 200 OK\r\nContent-Type: font/woff2\r\n"
+                           "Content-Length: %d\r\nConnection: close\r\n\r\n") % fsz
+                w = writer.write(headers.encode('utf-8'))
+                if hasattr(w, "__await__"):
+                    await w
+                with open(path[1:], 'rb') as f:
+                    while True:
+                        chunk = f.read(2048)
+                        if not chunk: break
+                        wc = writer.write(chunk)
+                        if hasattr(wc, "__await__"):
+                            await wc
+                return
+            except Exception as e:
+                print("serve font error:", e)
+                status = "404 Not Found"
+                resp = b"Not Found"
+                ct = "text/plain; charset=utf-8"
+
         elif method == 'POST' and path == '/update':
             form = parse_form(body_str)
             txt = form.get('text', '')[:500]
@@ -450,8 +469,8 @@ async def main():
         # 空闲5分钟后展示图片（仅展示一次，直到下次启动/停止）
         if srv is None and _server_off_since is not None and not _idle_shown:
             if time.ticks_diff(time.ticks_ms(), _server_off_since) >= IDLE_TIMEOUT_MS:
-                from show_img import fast_show_img
-                fast_show_img()
+                from show_img import show_image
+                show_image()
                 _idle_shown = True
                 break  # 退出循环
 
