@@ -88,9 +88,12 @@ def draw_text(text, color=TFT.WHITE, scale=2):
     tft.fill(TFT.BLACK)
     tft.text((0,0), text, color, FONT, scale)
 
+ap = network.WLAN(network.AP_IF)
+sta = network.WLAN(network.STA_IF)
+ap.active(False)
+sta.active(False)
 # ---------- Wi-Fi（AP） ----------
 def start_ap():
-    ap = network.WLAN(network.AP_IF)
     ap.active(True)
     ap.config(essid='ESP32-TFT', password='12345678', authmode=3)  # WPA2
     while not ap.active():
@@ -99,20 +102,60 @@ def start_ap():
 
 # ---------- Wi-Fi（STA） ----------
 def start_sta(ssid, pwd):
-    sta = network.WLAN(network.STA_IF)
     sta.active(True); sta.connect(ssid, pwd)
+    i_wait = 0
     while not sta.isconnected():
-        time.sleep_ms(200)
+        time.sleep_ms(500)
+        i_wait += 1
+        if i_wait > 60:   # ~30秒超时
+            raise Exception("WiFi connect timeout")
     return sta.ifconfig()[0]
 
-SSID = "ChinaUnicom-B932"
-PASSWORD = "87654326"
+# ---------- 配置文件 ----------
+CFG_PATH = "wifi.config"
+
+def load_config():
+    """从 .config 读取 {"ssid":..., "password":...}；不存在则返回默认空"""
+    cfg = {"ssid": "", "password": ""}
+    try:
+        with open(CFG_PATH, "r") as f:
+            for ln in f:
+                ln = ln.strip()
+                if not ln or ln.startswith("#"): 
+                    continue
+                if "=" in ln:
+                    k, v = ln.split("=", 1)
+                    k = k.strip().lower()
+                    v = v.strip()
+                    v = v.strip('"').strip("'")  # 去引号
+                    if k in cfg:
+                        cfg[k] = v
+    except Exception:
+        pass
+    return cfg
+
+def save_config(ssid, password):
+    """写 .config（覆盖写）"""
+    try:
+        with open(CFG_PATH, "w") as f:
+            f.write("ssid=%s\n" % ssid.replace("\n", " ").strip())
+            f.write("password=%s\n" % password.replace("\n", " ").strip())
+        return True
+    except Exception as e:
+        print("save_config error:", e)
+        return False
+
+cfg = load_config()
+SSID = cfg.get("ssid", "ChinaUnicom-B932")
+PASSWORD = cfg.get("password", "87654326")
+
 try:
     draw_text("Connecting to\nWiFi: %s" % SSID, TFT.CYAN, 1)
     IP = start_sta(SSID, PASSWORD)
     draw_text("Connected!\nIP: %s" % IP, TFT.GREEN, 1)
 except Exception as e:
     print("WiFi error:", e)
+    sta.active(False)
     IP = start_ap()
     draw_text("AP Mode\nSSID: ESP32-TFT\nPassword: 12345678\nIP: %s" % IP, TFT.YELLOW, 1)
 
@@ -142,7 +185,7 @@ button{padding:8px 14px;font-size:16px;margin-right:8px}
     "ROND" 0;
   white-space: pre;
   box-sizing: content-box;
-  overflow: hidden;               /* 固定区域：超出隐藏 */
+  overflow: hidden;
   image-rendering: pixelated;
 }
 .info{color:#888; font-size:12px; margin-top:6px}
@@ -154,8 +197,8 @@ button{padding:8px 14px;font-size:16px;margin-right:8px}
 <div class="row">
 <label>颜色：</label>
 <select id="color">
-  <option value="white">白色</option>
-  <option value="black">黑色</option>
+  <option value="white">白</option>
+  <option value="black">黑</option>
   <option value="red">红</option>
   <option value="maroon">褐红</option>
   <option value="green">绿</option>
@@ -174,7 +217,7 @@ button{padding:8px 14px;font-size:16px;margin-right:8px}
 </div>
 
 <div class="row">
-<textarea id="text" placeholder="在此输入要显示到屏幕的文本..."></textarea>
+<textarea id="text" placeholder="在此输入..."></textarea>
 </div>
 
 <div class="row">
@@ -186,12 +229,11 @@ button{padding:8px 14px;font-size:16px;margin-right:8px}
 <div class="info" id="meta"></div>
 
 <script>
-/* 与设备保持一致的渲染逻辑（预览固定区域 + 字号随 scale 变化） */
 const SCREEN_W = 128, SCREEN_H = 128;
 """+f"""
 const FONT_W = {FONT_W}, FONT_H = {FONT_H};   // font5x8
 """+"""
-const PREVIEW_ZOOM = 3;         // 网页预览放大倍数（不影响设备端）
+const PREVIEW_ZOOM = 3;
 const text = document.getElementById('text');
 const color= document.getElementById('color');
 const scale= document.getElementById('scale');
@@ -209,7 +251,6 @@ function colorToCss(name){
   return map[name] || '#ffffff';
 }
 
-// 固定预览外壳尺寸：屏幕像素 × 放大倍数
 function fixPreviewBox(){
   pv.style.width  = (SCREEN_W * PREVIEW_ZOOM) + 'px';
   pv.style.height = (SCREEN_H * PREVIEW_ZOOM) + 'px';
@@ -222,8 +263,6 @@ function renderPreview(){
   const cellH = s * (FONT_H + 3);
   const cols = Math.floor(SCREEN_W / cellW);
   const rows = Math.ceil(SCREEN_H / cellH);
-
-  // 折行&截断与设备一致
   const src = (text.value || "").replace(/\\r/g, "");
   const outLines = [];
   let line = "", x = 0, y = 0;
@@ -244,14 +283,13 @@ function renderPreview(){
   if (y < rows && line.length) outLines.push(line);
   while (outLines.length > rows) outLines.pop();
 
-  // 预览样式：字号/行距/字距随 scale & ZOOM 等比变化；外壳固定
   pv.style.color = colorToCss(color.value);
   pv.style.fontSize    = (1.2 * FONT_H * s * PREVIEW_ZOOM) + "px";
   pv.style.lineHeight  = ((cellH) * PREVIEW_ZOOM) + "px";
   pv.style.letterSpacing = (s * 0.25 * PREVIEW_ZOOM) + "px";
   pv.textContent = outLines.join("\\n");
 
-  meta.textContent = `屏幕: ${SCREEN_W}x${SCREEN_H}，单元: ${cellW}x${cellH}，列×行上限: ${cols}×${rows}，字号: ${s}x，预览放大: ${PREVIEW_ZOOM}x`;
+  meta.textContent = `${cellW}x${cellH} in ${SCREEN_W}x${SCREEN_H}, Preview zoom: ${PREVIEW_ZOOM}x`;
 }
 
 async function post(path, body){
@@ -277,7 +315,33 @@ btnC.onclick = async ()=>{ await post('/clear', {}); };
 
 renderPreview();
 </script>
-</body></html>
+
+<hr>
+<h2 style="font-size:16px;margin:10px 0 6px;">配置 Wi-Fi</h2>
+<div class="row">
+  <button id="configWifi">配置 Wi-Fi</button>
+</div>
+<div class="info" id="wifiInfo"></div>
+
+<script>
+const wifiInfo = document.getElementById('wifiInfo');
+const btnCfg   = document.getElementById('configWifi');
+
+btnCfg.onclick = async ()=>{
+  const ssid = prompt("输入 Wi-Fi SSID:");
+  if (!ssid) { wifiInfo.textContent = "取消输入"; return; }
+  const pwd  = prompt("输入 Wi-Fi 密码（可留空）:") || "";
+  wifiInfo.textContent = "正在保存…";
+  try{
+    const text = await post('/wifi', {ssid:ssid, password:pwd});
+    wifiInfo.textContent = text;
+  }catch(e){
+    wifiInfo.textContent = "请求结果：" + e;
+  }
+};
+</script>
+</body>
+</html>
 """
 
 last_text = "Hello, ESP32!"
@@ -381,6 +445,7 @@ async def handle_client(reader, writer):
 
         if method == 'GET' and path == '/':
             resp = PAGE.encode('utf-8')
+            ct = "text/html; charset=utf-8"
 
         elif method == 'POST' and path == '/update':
             form = parse_form(body_str)
@@ -401,6 +466,25 @@ async def handle_client(reader, writer):
             tft.fill(TFT.BLACK)
             resp = b"OK"
             ct = "text/plain; charset=utf-8"
+
+        elif method == 'POST' and path == '/wifi':
+            # 保存并尝试连接
+            form = parse_form(body_str)
+            new_ssid = (form.get('ssid','') or '').strip()
+            new_pwd  = (form.get('password','') or '')
+            if not new_ssid:
+                resp = b"SSID 不能为空"
+                ct = "text/plain; charset=utf-8"
+            else:
+                ok = save_config(new_ssid, new_pwd)
+                if not ok:
+                    status = "500 Internal Server Error"
+                    resp = b"写入配置失败"
+                    ct = "text/plain; charset=utf-8"
+                else:
+                    msg = "配置已保存。重启后自动连接 Wi-Fi: %s" % new_ssid
+                    resp = msg.encode('utf-8')
+                    ct = "text/plain; charset=utf-8"
 
         else:
             status = "404 Not Found"
@@ -477,17 +561,15 @@ btn_k2 = Pin(K2_PIN, Pin.IN, Pin.PULL_UP)
 btn_k1.irq(trigger=Pin.IRQ_FALLING, handler=_irq_debounced(_on_k1))
 btn_k2.irq(trigger=Pin.IRQ_FALLING, handler=_irq_debounced(_on_k2))
 
-async def start_http():
+async def start_http(from_auto_start=False):
     global srv
     if srv is not None:
         return
     try:
         srv = await asyncio.start_server(handle_client, "0.0.0.0", 80)
         print("HTTP server started at http://%s" % IP)
-        try:
+        if not from_auto_start:
             draw_text("Server ON\nIP: %s" % IP, TFT.GREEN, 1)
-        except Exception:
-            pass
     except Exception as e:
         print("start_http error:", e)
         srv = None
@@ -514,7 +596,7 @@ async def stop_http():
 # ---------- 主循环 ----------
 async def main():
     if AUTO_START:
-        await start_http()
+        await start_http(from_auto_start=True)
     else:
         try:
             draw_text("Press K1 to\nstart server", TFT.CYAN, 1)
